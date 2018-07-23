@@ -30,7 +30,7 @@ from matplotlib import pyplot as plt
 
 # save and compute metrics
 
-class MyMCue(obj):
+class MyMCue():
     def __init__(self,
             learning_rate=0.0001,
             lr_decay=0.9,
@@ -71,11 +71,10 @@ class MyMCue(obj):
     #################
     # Preprocessing
     #################
-    def getCrop(self, src,ceny,cenx):
+    def getCrop(self, src,ceny,cenx):        
+        imHeight,imWidth=self.imHeight, self.imWidth
+        height,width=src.shape[:2] 
         
-        imHeight,imWidth=self.imHeight,self.imWidth
-
-        height,width =src.shape[:2]   
         if height<imHeight:
             times=float(imHeight)/float(height)
             src=cv2.resize(src,( int(float(width)*times+2), imHeight), interpolation=cv2.INTER_NEAREST)
@@ -89,8 +88,8 @@ class MyMCue(obj):
             cenx=int(cenx*times)
             ceny=int(ceny*times)
      
-        lef,top=ceny-int(imWidth/2),cenx-int(imWidth/2)
-        rig,bot=lef+imWidth,top+imHeight
+        lef,top=ceny-int(imWidth/2), cenx-int(imWidth/2)
+        rig,bot=lef+imWidth, top+imHeight
     
         if lef<0:
             rig=rig-lef
@@ -129,7 +128,7 @@ class MyMCue(obj):
             if num_labels==1:
                 bbox[i]=[y_batch.shape[1]/2,y_batch.shape[2]/2,0,0]
             else:
-                bbox[i] =[centroids[minid][0],centroids[minid][1],stats[minid][2],stats[minid][3]]
+                bbox[i]=[centroids[minid][0],centroids[minid][1],stats[minid][2],stats[minid][3]]
             
         return bbox
         
@@ -146,7 +145,9 @@ class MyMCue(obj):
             gt=cv2.imread(lbname,0)/225
             gt=gt.astype(np.uint8) 
      
-            #computes the connected components labeled image and also produces a statistics output for each label       
+            # computes the connected components labeled image and also produces a statistics output for each label.
+            ## in our case, the surface defect inspection, the max connected component is image background.
+            ### the rest connected components are ROIs
             output=cv2.connectedComponentsWithStats(gt, 4, cv2.CV_32S)
             num_labels=output[0]
             stats=output[2]        
@@ -158,15 +159,21 @@ class MyMCue(obj):
                 labelROI=self.getCrop(gt,rx,ry)
     
             else:    
-                # take the max ROI area
+                # pick up image background
                 areas=stats[:][4]
                 maxid=np.argmax(areas)
+                
+                # random offet for centroids of all ROIs               
+                ROI=np.zeros_like(image)
+                labelROI=np.zeros_like(gt)
+                for i in range(num_labels):
+                    if i != maxid:
+                        rx,ry=np.random.randint(10),np.random.randint(10)
+                        rx,ry=np.random.randint(10),np.random.randint(10)
+                        ROI+=self.getCrop(image,int(centroids[i][0]+rx-5),int(centroids[i][1]+ry-5))
+                        labelROI+=self.getCrop(gt,int(centroids[i][0]+rx-5),int(centroids[i][1]+ry-5))
     
-                rx,ry=np.random.randint(10),np.random.randint(10)
-                ROI=self.getCrop(image,int(centroids[maxid][0]+rx-5),int(centroids[maxid][1]+ry-5))
-                labelROI=self.getCrop(gt,int(centroids[maxid][0]+rx-5),int(centroids[maxid][1]+ry-5))
-    
-            #generate ROI batch 
+            # generate ROI batch 
             img_batch=np.zeros((self.batch_size, self.imHeight, self.imWidth, self.num_channels), np.float32)
             label_batch=np.zeros((self.batch_size, self.gtHeight, self.gtWidth), np.int32)
             
@@ -182,6 +189,7 @@ class MyMCue(obj):
         # define input holders
         label=tf.placeholder(tf.int32, shape=[None]+self.img_shape)
         bboxlabel=tf.placeholder(tf.float32, shape=[None]+[4])
+        
         # define model
         with tf.name_scope('unet'):
             model=UNet().create_model(img_shape=self.img_shape+[self.num_channels],
@@ -190,10 +198,7 @@ class MyMCue(obj):
             [conv10 ,bboxPred]=model.output
             pred=tf.clip_by_value(conv10, -10.0, 10.0) 
         
-        # define losses
-        #with tf.name_scope('cross_entropy'):
-        #    cross_entropy_loss=tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=label, logits=pred))
-        
+        # define loss    
         with tf.name_scope('cross_entropy'):
             cross_entropy=tf.nn.sparse_softmax_cross_entropy_with_logits(labels=label, logits=pred)
             label2=tf.reshape(label,[-1, self.imHeight, self.imWidth])
@@ -203,11 +208,9 @@ class MyMCue(obj):
             cross_entropy_loss=tf.reduce_mean(cross_entropy)
             
         with tf.name_scope('Euclidean_loss'):
-        #    cross_entropy=tf.nn.sparse_softmax_cross_entropy_with_logits(labels=label, logits=pred)    
             diff=tf.subtract(bboxlabel, bboxPred)
             dist=tf.multiply(diff,diff)
-            Euclidean_distance_loss=tf.reduce_mean(dist)
-        
+            Euclidean_distance_loss=tf.reduce_mean(dist)        
         
         # define optimizer
         global_step=tf.Variable(0, name='global_step', trainable=False)
@@ -216,9 +219,8 @@ class MyMCue(obj):
                                                    iter_epoch, self.lr_decay, staircase=True)
         train_Unet=tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(cross_entropy_loss, global_step=global_step)
         Train_bbox=tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(Euclidean_distance_loss, global_step=global_step)
+        
         # compute dice score for simple evaluation during training
-        # with tf.name_scope('dice_eval'):
-        #     dice_evaluator=tf.reduce_mean(dice_coef(label, pred))
         ''' Tensorboard visualization '''
         # cleanup pervious info
         if self.load_from_checkpoint == '':
@@ -232,8 +234,8 @@ class MyMCue(obj):
         tf.summary.scalar('Euclidean_loss', Euclidean_distance_loss)
         
         summary_merged=tf.summary.merge_all()
-        # configuration session
-        
+       
+        # configuration session       
         config=tf.ConfigProto()
         config.gpu_options.allow_growth=True
         sess=tf.Session(config=config)
@@ -248,14 +250,14 @@ class MyMCue(obj):
         
         with sess.as_default():
             # Load the pre-trained process
-            if self.mode=='last':
+            if self.mode == 'last':
                 try:
                     module_file=tf.train.latest_checkpoint(self.checkpoint_path)    
-                    saver.restore(sess, module_file)
-                   
+                    saver.restore(sess, module_file)                  
                 except:
                     print ('unable to load checkpoint ...' )
-            elif self.mode=='init':
+                    
+            elif self.mode == 'init':
                 try:
                     saver.restore(sess,  self.load_from_checkpoint+'model-8013')
                     print ('--> load from checkpoint '+ self.load_from_checkpoint)
@@ -270,8 +272,7 @@ class MyMCue(obj):
                     saver.save(sess,  self.checkpoint_path+'model', global_step=global_step)
                     print ('save a checkpoint at '+  self.checkpoint_path+'model-'+str(it))
                     
-                x_batch, y_batch=self.nextbatch(it)
-                        
+                x_batch, y_batch=self.nextbatch(it)                        
          
                 bbox=self.calBbox(y_batch)
                 feed_dict={ img: x_batch, label: y_batch, bboxlabel:bbox }
