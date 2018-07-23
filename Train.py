@@ -145,8 +145,8 @@ class MyMCue():
             gt=cv2.imread(lbname,0)/225
             gt=gt.astype(np.uint8) 
      
-            # computes the connected components labeled image and also produces a statistics output for each label.
-            ## in our case, the surface defect inspection, the max connected component is image background.
+            # computes the connected components labeled image and also produces a statistics output for each label
+            ## in our case, the surface defect inspection, the max connected component is image background
             ### the rest connected components are ROIs
             output=cv2.connectedComponentsWithStats(gt, 4, cv2.CV_32S)
             num_labels=output[0]
